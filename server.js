@@ -28,8 +28,8 @@ app.get('/', (req, res) => {
   });
 });
 
-// Routes (coming soon)
-// app.use('/api/auth', require('./routes/auth'));
+// Routes
+app.use('/api/auth', require('./routes/auth'));
 // app.use('/api/tenants', require('./routes/tenants'));
 // app.use('/api/departments', require('./routes/departments'));
 // app.use('/api/bookings', require('./routes/bookings'));
