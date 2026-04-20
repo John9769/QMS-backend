@@ -4,6 +4,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const pool = require('./config/db');
+const { runJudge } = require('./utils/judge');
 
 const app = express();
 
@@ -18,6 +19,9 @@ const limiter = rateLimit({
   max: 100
 });
 app.use(limiter);
+
+// Start The Judge
+runJudge();
 
 // Health check
 app.get('/', (req, res) => {
