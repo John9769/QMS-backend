@@ -65,8 +65,8 @@ CREATE TABLE operation_hours (
   department_id UUID NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
   day_of_week VARCHAR(3) NOT NULL
     CHECK (day_of_week IN ('MON','TUE','WED','THU','FRI','SAT','SUN')),
-  open_time TIME NOT NULL,
-  close_time TIME NOT NULL,
+  open_time TIME,
+  close_time TIME,
   lunch_start TIME,
   lunch_end TIME,
   is_closed BOOLEAN DEFAULT false,
