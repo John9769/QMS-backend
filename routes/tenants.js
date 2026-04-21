@@ -9,8 +9,8 @@ const {
 const auth = require('../middleware/auth');
 
 router.post('/', auth, createTenant);
-router.get('/', auth, getAllTenants);
-router.get('/:id', auth, getTenant);
+router.get('/', getAllTenants);
+router.get('/:id', getTenant);
 router.put('/:id', auth, updateTenant);
 
 module.exports = router;
