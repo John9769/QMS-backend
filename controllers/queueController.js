@@ -1,12 +1,15 @@
 const pool = require('../config/db');
 const { nowMY } = require('../utils/eta');
 
-// GET NURSE DASHBOARD — Her clinic queue only
+const getMYToday = () => {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' });
+};
+
+// GET NURSE DASHBOARD
 const getNurseDashboard = async (req, res) => {
   try {
     const { session_id } = req.params;
 
-    // Get session details
     const sessionResult = await pool.query(
       `SELECT qs.*, d.name as department_name, t.name as tenant_name
        FROM queue_sessions qs
@@ -22,7 +25,6 @@ const getNurseDashboard = async (req, res) => {
 
     const session = sessionResult.rows[0];
 
-    // Get all tickets for this session
     const tickets = await pool.query(
       `SELECT qt.*,
               pp.full_name as patient_name,
@@ -42,28 +44,22 @@ const getNurseDashboard = async (req, res) => {
       [session_id]
     );
 
-    // Separate ARRIVED and PENDING
     const arrived = tickets.rows.filter(t => t.status === 'ARRIVED');
     const pending = tickets.rows.filter(t => t.status === 'PENDING');
     const called = tickets.rows.filter(t => t.status === 'CALLED');
 
-    // Auto-skip logic — find next to call
-    // Rule: clinic vacant + ARRIVED exists → promote first ARRIVED
-    // New patient (is_first_visit) only eligible if EMR_READY
     const clinicVacant = called.length === 0;
     let nextToCall = null;
 
     if (clinicVacant) {
-      // Find first ARRIVED patient eligible to be called
       const eligible = arrived.filter(t => {
         if (t.is_first_visit) {
           return t.verification_status === 'EMR_READY';
         }
-        return true; // existing patient always eligible
+        return true;
       });
 
       if (eligible.length > 0) {
-        // Sort by ticket number — lower number first
         eligible.sort((a, b) => a.ticket_number - b.ticket_number);
         nextToCall = eligible[0];
       }
@@ -89,7 +85,7 @@ const getNurseDashboard = async (req, res) => {
   }
 };
 
-// GEOFENCE TRIGGER — Patient hits 50m radius
+// GEOFENCE TRIGGER
 const triggerGeofence = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -101,7 +97,6 @@ const triggerGeofence = async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Get ticket
     const ticketResult = await client.query(
       `SELECT qt.*, pp.full_name as patient_name,
               pp.is_verified, qt.is_first_visit
@@ -125,7 +120,6 @@ const triggerGeofence = async (req, res) => {
 
     const now = nowMY();
 
-    // Update ticket to ARRIVED
     await client.query(
       `UPDATE queue_tickets SET
         status = 'ARRIVED',
@@ -137,7 +131,6 @@ const triggerGeofence = async (req, res) => {
       [now, lat, lng, distance_meters || 50, ticket_id]
     );
 
-    // Log geofence event
     await client.query(
       `INSERT INTO geofence_events
         (ticket_id, patient_id, tenant_id, triggered_at, lat, lng, distance_meters)
@@ -145,7 +138,6 @@ const triggerGeofence = async (req, res) => {
       [ticket_id, ticket.patient_id, ticket.tenant_id, now, lat, lng, distance_meters || 50]
     );
 
-    // Set verification status for existing patients
     if (!ticket.is_first_visit) {
       await client.query(
         `UPDATE queue_tickets SET verification_status = 'EMR_READY'
@@ -174,7 +166,7 @@ const triggerGeofence = async (req, res) => {
   }
 };
 
-// CALL PATIENT (Nurse calls next)
+// CALL PATIENT
 const callPatient = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -203,12 +195,8 @@ const callPatient = async (req, res) => {
       return res.status(400).json({ error: 'Patient must be ARRIVED before calling' });
     }
 
-    // Update to CALLED
     await client.query(
-      `UPDATE queue_tickets SET
-        status = 'CALLED',
-        called_at = $1
-       WHERE id = $2`,
+      `UPDATE queue_tickets SET status = 'CALLED', called_at = $1 WHERE id = $2`,
       [now, ticket_id]
     );
 
@@ -230,7 +218,7 @@ const callPatient = async (req, res) => {
   }
 };
 
-// SERVE PATIENT (Consultation done)
+// SERVE PATIENT
 const servePatient = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -251,27 +239,18 @@ const servePatient = async (req, res) => {
 
     const ticket = ticketResult.rows[0];
 
-    // Update to SERVED
     await client.query(
-      `UPDATE queue_tickets SET
-        status = 'SERVED',
-        served_at = $1
-       WHERE id = $2`,
+      `UPDATE queue_tickets SET status = 'SERVED', served_at = $1 WHERE id = $2`,
       [now, ticket_id]
     );
 
-    // Update session served counter
     await client.query(
-      `UPDATE queue_sessions SET
-        s_total_served = s_total_served + 1
-       WHERE id = $1`,
+      `UPDATE queue_sessions SET s_total_served = s_total_served + 1 WHERE id = $1`,
       [ticket.session_id]
     );
 
-    // Update booking to COMPLETED
     await client.query(
-      `UPDATE bookings SET status = 'COMPLETED'
-       WHERE ticket_id = $1`,
+      `UPDATE bookings SET status = 'COMPLETED' WHERE ticket_id = $1`,
       [ticket_id]
     );
 
@@ -292,7 +271,7 @@ const servePatient = async (req, res) => {
   }
 };
 
-// MARK EMR READY (Counter staff — Cik Ida)
+// MARK EMR READY
 const markEMRReady = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -323,11 +302,11 @@ const markEMRReady = async (req, res) => {
   }
 };
 
-// GET TODAY SESSION BY DEPARTMENT
+// GET TODAY SESSION
 const getTodaySession = async (req, res) => {
   try {
     const { department_id } = req.params;
-    const today = nowMY().toISOString().split('T')[0];
+    const today = getMYToday();
 
     const result = await pool.query(
       `SELECT qs.*, d.name as department_name, t.name as tenant_name
@@ -350,11 +329,11 @@ const getTodaySession = async (req, res) => {
   }
 };
 
-// DIRECTOR BIRD EYE — All departments live
+// DIRECTOR BIRD EYE
 const getDirectorView = async (req, res) => {
   try {
     const { tenant_id } = req.params;
-    const today = nowMY().toISOString().split('T')[0];
+    const today = getMYToday();
 
     const result = await pool.query(
       `SELECT 
