@@ -12,15 +12,11 @@ const pool = new Pool({
 
 pool.on('error', (err) => {
   console.error('Unexpected pool error:', err.message);
-  // Don't crash — pool will reconnect automatically
 });
 
-pool.connect((err) => {
-  if (err) {
-    console.error('Database connection failed:', err.message);
-  } else {
-    console.log('Database connected to Neon successfully');
-  }
-});
+// Test connection without holding it open
+pool.query('SELECT 1')
+  .then(() => console.log('Database connected to Neon successfully'))
+  .catch(err => console.error('Database connection failed:', err.message));
 
 module.exports = pool;

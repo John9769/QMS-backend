@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const pool = require('./config/db');
 const { runJudge } = require('./utils/judge');
+const { runAppointmentReminder } = require('./utils/appointmentReminder');
 
 const app = express();
 
@@ -22,6 +23,9 @@ app.use(limiter);
 
 // Start The Judge
 runJudge();
+
+// Start Appointment Reminder
+runAppointmentReminder();
 
 // Health check
 app.get('/', (req, res) => {
