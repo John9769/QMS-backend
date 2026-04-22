@@ -7,7 +7,8 @@ const {
   servePatient,
   markEMRReady,
   getTodaySession,
-  getDirectorView
+  getDirectorView,
+  getCounterView
 } = require('../controllers/queueController');
 const auth = require('../middleware/auth');
 
@@ -23,5 +24,8 @@ router.put('/ticket/:ticket_id/emr-ready', auth, markEMRReady);
 
 // Director bird eye
 router.get('/director/:tenant_id', auth, getDirectorView);
+
+// Counter — Cik Ida
+router.get('/counter/:tenant_id', auth, getCounterView);
 
 module.exports = router;

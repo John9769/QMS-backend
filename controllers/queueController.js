@@ -29,9 +29,11 @@ const getNurseDashboard = async (req, res) => {
       `SELECT qt.*,
               pp.full_name as patient_name,
               pp.phone as patient_phone,
-              pp.is_verified as patient_verified
+              pp.is_verified as patient_verified,
+              d.name as department_name
        FROM queue_tickets qt
        LEFT JOIN patient_profiles pp ON pp.id = qt.patient_id
+       LEFT JOIN departments d ON d.id = qt.department_id
        WHERE qt.session_id = $1
        AND qt.status NOT IN ('SERVED', 'FORFEITED')
        ORDER BY
@@ -350,7 +352,7 @@ const getDirectorView = async (req, res) => {
         COUNT(CASE WHEN qt.status = 'ARRIVED' THEN 1 END) as arrived_count,
         COUNT(CASE WHEN qt.status = 'CALLED' THEN 1 END) as called_count
        FROM departments d
-       LEFT JOIN queue_sessions qs ON qs.department_id = d.id 
+       LEFT JOIN queue_sessions qs ON qs.department_id = d.id
          AND qs.session_date = $2
        LEFT JOIN queue_tickets qt ON qt.session_id = qs.id
          AND qt.status NOT IN ('SERVED','FORFEITED')
@@ -374,6 +376,42 @@ const getDirectorView = async (req, res) => {
   }
 };
 
+// COUNTER VIEW — Cik Ida sees all arriving patients across hospital
+const getCounterView = async (req, res) => {
+  try {
+    const { tenant_id } = req.params;
+    const today = getMYToday();
+
+    const result = await pool.query(
+      `SELECT qt.*,
+              pp.full_name as patient_name,
+              pp.phone as patient_phone,
+              pp.is_verified as patient_verified,
+              d.name as department_name
+       FROM queue_tickets qt
+       LEFT JOIN patient_profiles pp ON pp.id = qt.patient_id
+       LEFT JOIN departments d ON d.id = qt.department_id
+       LEFT JOIN queue_sessions qs ON qs.id = qt.session_id
+       WHERE qt.tenant_id = $1
+       AND qs.session_date = $2
+       AND qt.status NOT IN ('SERVED', 'FORFEITED', 'CALLED')
+       ORDER BY
+         CASE qt.status
+           WHEN 'ARRIVED' THEN 1
+           WHEN 'PENDING' THEN 2
+         END,
+         qt.created_at ASC`,
+      [tenant_id, today]
+    );
+
+    res.json({ tickets: result.rows });
+
+  } catch (err) {
+    console.error('Counter view error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   getNurseDashboard,
   triggerGeofence,
@@ -381,5 +419,6 @@ module.exports = {
   servePatient,
   markEMRReady,
   getTodaySession,
-  getDirectorView
+  getDirectorView,
+  getCounterView
 };
