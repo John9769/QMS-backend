@@ -1,5 +1,4 @@
 const pool = require('../config/db');
-const { haversine, drivingMinutes } = require('../utils/haversine');
 const { calculateETA, nowMY } = require('../utils/eta');
 
 // CREATE S SERIES BOOKING
@@ -16,9 +15,21 @@ const createBooking = async (req, res) => {
       return res.status(400).json({ error: 'All fields required' });
     }
 
+    // Advance booking validation — max 3 days
+    const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' });
+    const maxDate = new Date();
+    maxDate.setDate(maxDate.getDate() + 3);
+    const maxDateStr = maxDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' });
+
+    if (booking_date < todayStr) {
+      return res.status(400).json({ error: 'Cannot book for a past date' });
+    }
+    if (booking_date > maxDateStr) {
+      return res.status(400).json({ error: 'Advance booking only allowed up to 3 days' });
+    }
+
     await client.query('BEGIN');
 
-    // 1. Get department + tenant + hospital GPS
     const deptResult = await client.query(
       `SELECT d.*, t.lat as hospital_lat, t.lng as hospital_lng,
               t.s_series_fee, t.hospital_rebate, t.name as tenant_name
@@ -35,7 +46,6 @@ const createBooking = async (req, res) => {
 
     const dept = deptResult.rows[0];
 
-    // 2. Get operation hours
     const hoursResult = await client.query(
       `SELECT * FROM operation_hours WHERE department_id = $1`,
       [department_id]
@@ -46,7 +56,6 @@ const createBooking = async (req, res) => {
       return res.status(400).json({ error: 'Operation hours not set for this department' });
     }
 
-    // 3. Get or create queue session for booking date
     let sessionResult = await client.query(
       `SELECT * FROM queue_sessions 
        WHERE department_id = $1 AND session_date = $2`,
@@ -65,17 +74,14 @@ const createBooking = async (req, res) => {
 
     const session = sessionResult.rows[0];
 
-    // 4. Check S quota not exceeded
     if (session.s_total_booked >= dept.s_quota_per_day) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'S series quota full for this day' });
     }
 
-    // 5. Calculate queue minutes already booked
     const currentQueueMinutes = session.s_total_booked * dept.avg_minutes_per_patient;
 
-    // 6. Calculate ETA
-    const etaResult = calculateETA(
+    const scheduleResult = calculateETA(
       parseFloat(origin_lat),
       parseFloat(origin_lng),
       parseFloat(dept.hospital_lat),
@@ -85,16 +91,14 @@ const createBooking = async (req, res) => {
       currentQueueMinutes
     );
 
-    if (etaResult.error) {
+    if (scheduleResult.error) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: etaResult.error });
+      return res.status(400).json({ error: scheduleResult.error });
     }
 
-    // 7. Generate ticket number
     const ticketNumber = session.s_last_ticket_number + 1;
     const ticketCode = `S${String(ticketNumber).padStart(4, '0')}`;
 
-    // 8. Create queue ticket
     const ticketResult = await client.query(
       `INSERT INTO queue_tickets
         (session_id, patient_id, department_id, tenant_id,
@@ -110,13 +114,12 @@ const createBooking = async (req, res) => {
         is_first_visit || false,
         is_first_visit ? 'PENDING' : 'NA',
         origin_lat, origin_lng,
-        etaResult.driveMinutes,
-        etaResult.eta,
-        etaResult.etaDeadline
+        scheduleResult.driveMinutes,
+        scheduleResult.eta,
+        scheduleResult.etaDeadline
       ]
     );
 
-    // 9. Create booking record
     await client.query(
       `INSERT INTO bookings
         (ticket_id, patient_id, department_id, tenant_id,
@@ -129,12 +132,11 @@ const createBooking = async (req, res) => {
         ticketResult.rows[0].id, patient_id, department_id, dept.tenant_id,
         booking_date, origin_lat, origin_lng,
         dept.hospital_lat, dept.hospital_lng,
-        etaResult.distanceKm, etaResult.driveMinutes,
-        etaResult.eta, etaResult.etaDeadline
+        scheduleResult.distanceKm, scheduleResult.driveMinutes,
+        scheduleResult.eta, scheduleResult.etaDeadline
       ]
     );
 
-    // 10. Create payment record
     const platformFee = dept.s_series_fee - dept.hospital_rebate;
     await client.query(
       `INSERT INTO payments
@@ -148,7 +150,6 @@ const createBooking = async (req, res) => {
       ]
     );
 
-    // 11. Update session counters
     await client.query(
       `UPDATE queue_sessions SET
         s_last_ticket_number = $1,
@@ -165,10 +166,15 @@ const createBooking = async (req, res) => {
         ...ticketResult.rows[0],
         tenant_name: dept.tenant_name,
         department_name: dept.name,
-        distance_km: etaResult.distanceKm,
-        drive_minutes: etaResult.driveMinutes,
-        eta: etaResult.eta,
-        eta_deadline: etaResult.etaDeadline
+        hospital_lat: dept.hospital_lat,
+        hospital_lng: dept.hospital_lng,
+        booking_date: booking_date,
+        distance_km: scheduleResult.distanceKm,
+        drive_minutes: scheduleResult.driveMinutes,
+        appointment_time: scheduleResult.eta,
+        latest_arrival: scheduleResult.etaDeadline,
+        patients_ahead: session.s_total_booked,
+        avg_minutes_per_patient: dept.avg_minutes_per_patient
       }
     });
 
@@ -210,7 +216,7 @@ const getPatientBookings = async (req, res) => {
   }
 };
 
-// CREATE A SERIES — Doctor instructed appointment (Nurse keys in)
+// CREATE A SERIES
 const createAppointment = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -225,7 +231,6 @@ const createAppointment = async (req, res) => {
 
     await client.query('BEGIN');
 
-    // 1. Find or create patient
     let patientResult = await client.query(
       `SELECT * FROM patient_profiles
        WHERE ic_last4 = $1 AND phone = $2 AND deleted_at IS NULL`,
@@ -248,7 +253,6 @@ const createAppointment = async (req, res) => {
       patient = patientResult.rows[0];
     }
 
-    // 2. Get department + tenant
     const deptResult = await client.query(
       `SELECT d.*, t.lat as hospital_lat, t.lng as hospital_lng,
               t.a_series_fee, t.hospital_rebate, t.name as tenant_name
@@ -265,7 +269,6 @@ const createAppointment = async (req, res) => {
 
     const dept = deptResult.rows[0];
 
-    // 3. Get or create queue session for appointment date
     let sessionResult = await client.query(
       `SELECT * FROM queue_sessions
        WHERE department_id = $1 AND session_date = $2`,
@@ -283,11 +286,9 @@ const createAppointment = async (req, res) => {
 
     const session = sessionResult.rows[0];
 
-    // 4. Generate A series ticket number
     const ticketNumber = session.a_last_ticket_number + 1;
     const ticketCode = `A${String(ticketNumber).padStart(4, '0')}`;
 
-    // 5. Create queue ticket
     const ticketResult = await client.query(
       `INSERT INTO queue_tickets
         (session_id, patient_id, department_id, tenant_id,
@@ -304,7 +305,6 @@ const createAppointment = async (req, res) => {
       ]
     );
 
-    // 6. Create payment record
     const platformFee = dept.a_series_fee - dept.hospital_rebate;
     await client.query(
       `INSERT INTO payments
@@ -318,7 +318,6 @@ const createAppointment = async (req, res) => {
       ]
     );
 
-    // 7. Update session A counter
     await client.query(
       `UPDATE queue_sessions SET
         a_last_ticket_number = $1,

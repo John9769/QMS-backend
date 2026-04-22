@@ -27,9 +27,11 @@ const calculateETA = (
   bookingDate,
   currentQueueMinutes
 ) => {
+  // 1. Calculate distance and drive time
   const distanceKm = haversine(originLat, originLng, hospitalLat, hospitalLng);
   const driveMinutes = drivingMinutes(distanceKm);
 
+  // 2. Check operation hours
   const bookDate = new Date(bookingDate);
   const days = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
   const dayStr = days[bookDate.getDay()];
@@ -41,73 +43,79 @@ const calculateETA = (
 
   const openTime = timeToDateMY(dayHours.open_time, bookDate);
   const closeTime = timeToDateMY(dayHours.close_time, bookDate);
-  const lunchStart = dayHours.lunch_start ? timeToDateMY(dayHours.lunch_start, bookDate) : null;
-  const lunchEnd = dayHours.lunch_end ? timeToDateMY(dayHours.lunch_end, bookDate) : null;
 
-  // CRITICAL — Check if booking is for TODAY
+  // 3. Lunch buffer
+  const lunchBufferStart = timeToDateMY('12:45', bookDate);
+  const lunchBufferEnd = timeToDateMY('14:00', bookDate);
+
   const now = nowMY();
-  const todayStr = now.toISOString().split('T')[0];
-  const bookDateStr = bookDate.toISOString().split('T')[0];
+  const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: MY_TIMEZONE });
+  const bookDateStr = bookDate.toLocaleDateString('en-CA', { timeZone: MY_TIMEZONE });
   const isToday = todayStr === bookDateStr;
 
   if (isToday) {
-    // Clinic already closed
     if (now >= closeTime) {
       return { error: 'Clinic is already closed for today' };
     }
-    // Use NOW as base if already past open time
-    // Also check driving time fits within remaining hours
-    const etaBase = now > openTime ? now : openTime;
-    let eta = new Date(etaBase.getTime() + currentQueueMinutes * 60000);
 
-    // Skip lunch
-    if (lunchStart && lunchEnd && eta >= lunchStart && eta < lunchEnd) {
-      eta = new Date(lunchEnd.getTime());
+    // Patient physical arrival time from now
+    const physicalArrival = new Date(now.getTime() + driveMinutes * 60000);
+
+    // Cannot reach before closing
+    if (physicalArrival >= closeTime) {
+      return { error: 'Not enough time to reach the clinic before closing' };
     }
 
-    // ETA must be within closing time
-    if (eta >= closeTime) {
+    // Slot base = latest of open time OR physical arrival time
+    const slotBase = physicalArrival > openTime ? physicalArrival : openTime;
+
+    // Add queue minutes
+    let slot = new Date(slotBase.getTime() + currentQueueMinutes * 60000);
+
+    // Push slot past lunch buffer
+    if (slot >= lunchBufferStart && slot < lunchBufferEnd) {
+      slot = new Date(lunchBufferEnd.getTime());
+    }
+
+    if (slot >= closeTime) {
       return { error: 'No available slots — clinic is full for today' };
     }
 
-    // Patient must be able to drive and arrive before closing
-    const arrivalTime = new Date(now.getTime() + driveMinutes * 60000);
-    if (arrivalTime >= closeTime) {
-      return { error: 'Not enough time to reach clinic before closing' };
+    let slotDeadline = new Date(slot.getTime() + 15 * 60000);
+    if (slotDeadline >= lunchBufferStart && slotDeadline < lunchBufferEnd) {
+      slotDeadline = new Date(lunchBufferEnd.getTime() + 15 * 60000);
     }
-
-    const etaDeadline = new Date(eta.getTime() + 15 * 60000);
 
     return {
       distanceKm: Math.round(distanceKm * 100) / 100,
       driveMinutes,
-      eta,
-      etaDeadline,
+      eta: slot,
+      etaDeadline: slotDeadline,
       dayStr,
       openTime,
       closeTime
     };
   }
 
-  // Future date booking
-  let eta = new Date(openTime.getTime() + currentQueueMinutes * 60000);
+  // Future date — slot from open time + queue minutes
+  // Drive time not needed since patient plans ahead
+  let slot = new Date(openTime.getTime() + currentQueueMinutes * 60000);
 
-  // Skip lunch
-  if (lunchStart && lunchEnd && eta >= lunchStart && eta < lunchEnd) {
-    eta = new Date(lunchEnd.getTime());
+  if (slot >= lunchBufferStart && slot < lunchBufferEnd) {
+    slot = new Date(lunchBufferEnd.getTime());
   }
 
-  if (eta >= closeTime) {
+  if (slot >= closeTime) {
     return { error: 'No available slots — clinic is full for the day' };
   }
 
-  const etaDeadline = new Date(eta.getTime() + 15 * 60000);
+  const slotDeadline = new Date(slot.getTime() + 15 * 60000);
 
   return {
     distanceKm: Math.round(distanceKm * 100) / 100,
     driveMinutes,
-    eta,
-    etaDeadline,
+    eta: slot,
+    etaDeadline: slotDeadline,
     dayStr,
     openTime,
     closeTime
